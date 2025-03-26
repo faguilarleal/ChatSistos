@@ -3,3 +3,6 @@
 
 # jetbrains directory
 .idea
+
+# vscode file
+.vscode/
