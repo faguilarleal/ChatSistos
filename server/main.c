@@ -25,237 +25,136 @@ Servicios:
 #include <stdlib.h>
 #include <stdio.h>
 #include <cjson/cJSON.h> //para parcear a cjson
+#include <pthread.h> 
 
-#define MAX_CLIENTS 10
-#define MAX_USERS 10
+#define MAX_CLIENTS 100
+#define MAX_USERNAME 50
+#define MAX_STATUS 20
+#define MAX_MESSAGE 1024
 
-typedef struct{
-	char username[50];
-	char status[50];
-    char pending_msg[1024]; // mensaje pendiente por enviar
-    int has_pending_msg; 
-
-	struct lws *wsi;
+typedef struct {
+    char username[MAX_USERNAME];
+    char status[MAX_STATUS];
+    char IP[50];
+    struct lws *wsi;
 } User;
 
-User Users[MAX_USERS];
+User users[MAX_CLIENTS];
+int user_count = 0;
 
-//declarar funciones para que no de error
-void Register();
-int addUser(const char *username, const char *status, struct lws *wsi);
-
-
-void menu(){
-	int opcion;
-	printf("Escoga una opcion: ");
-
-	printf("\n1. Registro de usuarios");
-	printf("\n2. Liberacion de usuarios");
-	printf("\n3. Listado de usuarios conectados");
-	printf("\n4. Obtencion de informacion de usuario");
-	printf("\n5. Cambio de estatus");
-	printf("\n6. Boracasting y mensajes directos");
-	printf("\n7. salir");
-
-	printf("\nEscoga una opcion: ");
-	scanf("%d", &opcion); 
-
-	switch (opcion)
-	{
-	case 1:
-		/* registrar usuario */
-        Register();
-		break;
-	case 2:
-		/* code */
-		break;
-	case 3:
-		/* code */
-		break;
-	case 4:
-		/* code */
-		break;
-	case 5:
-		/* code */
-		break;
-	case 6:
-		/* code */
-		break;
-	case 7:
-		printf("👋 chao\n");
-		exit(0);
-		break;
-	default:
-		printf("opcion no valida, vuelta a intentarlo ");
-		break;
-	}
-
-}
+pthread_mutex_t users_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 
-void Register(){
 
-    User usuario;
-
-    char username[50];
-    printf("\nIngrese el nombre del usuario a registrar: ");
-    scanf("%s", username); 
-    char status[50];
-    printf("\nIngrese el status del usuario (activo, ocupado, inactivo): ");
-    scanf("%s", status); 
-
-    if (strcmp(status, "activo") != 0 && strcmp(status, "ocupado") != 0 && strcmp(status, "inactivo") != 0){
-        printf("\ningrese correctamente en minusculas el estado ");
-        return; 
-    }
-
-    int response = addUser(username, status, NULL); //null porque como aqui en esta parte no se usa websocket
-
-    if (response == 0){
-        printf("\nBienvenid@  %s\n\n", username);
-    }else{
-        printf("\no se pudo registral el usuario, vuelva a intentarlo ");
-    }
-
+//registrar un nuevo usuario
+int register_user(const char* username, const char* status, const char* ip, struct lws *wsi) {
+    pthread_mutex_lock(&users_mutex);
     
-
-
-}
-
-int addUser(const char *username, const char *status, struct lws *wsi){
-
-    for (int i = 0; i < MAX_USERS; i++) {
-        // validar si el nombre ya existe
-        if (strcmp(Users[i].username, username) == 0) {
-            printf("\nError: El nombre de usuario ya exite");
-            return -1;
+    // Verificar si el usuario ya existe
+    for (int i = 0; i < user_count; i++) {
+        if (strcmp(users[i].username, username) == 0) {
+            pthread_mutex_unlock(&users_mutex);
+            return -1;  // si existe
         }
     }
-
-    for (int i = 0; i < MAX_USERS; i++) {
-        //buscar una posocion vacia en el array
-        if (strlen(Users[i].username) == 0) { 
-            strcpy(Users[i].username, username);
-            strcpy(Users[i].status, status);
-            Users[i].wsi = wsi; //Asignar el puntero WebSocket 
-
-            printf("Usuario agregado en la posicion %d: %s (%s)\n", i, username, status);;
-            return 0;
-        }
+    
+    //veridicar el  limite de usuarios
+    if (user_count >= MAX_CLIENTS) {
+        pthread_mutex_unlock(&users_mutex);
+        return -2;  // limnite de usuarios alcanzado
     }
-
-    // Si no hay espacio disponible
-    printf("\nError: No hay espacio para agregar mas usuarios");
-    return -1; 
-}
-
-void handleRegister(struct lws *wsi, cJSON *json){
-    //jalar los datos
-    const cJSON *username = cJSON_GetObjectItem(json, "username");
-    const cJSON *status = cJSON_GetObjectItem(json, "status");
-
-    if (!username || !status || !cJSON_IsString(username) || !cJSON_IsString(status)) {
-        lwsl_err("Registro mal formado\n");
-        return;
-    }
-
-    if (addUser(username->valuestring, status->valuestring, wsi) == 0) {
-        for (int i = 0; i < MAX_USERS; i++) {
-            if (Users[i].wsi == wsi) {
-                strcpy(Users[i].pending_msg, "{\"type\": \"register_ack\", \"status\": \"ok\"}");
-                Users[i].has_pending_msg = 1;
-                lws_callback_on_writable(wsi);
-                break;
-            }
-        }
-    } else {
-        for (int i = 0; i < MAX_USERS; i++) {
-            if (Users[i].wsi == wsi) {
-                strcpy(Users[i].pending_msg,
-                    "{\"type\": \"register_ack\", \"status\": \"error\", \"reason\": \"username_taken_or_full\"}");
-                Users[i].has_pending_msg = 1;
-                lws_callback_on_writable(wsi);
-                break;
-            }
-        }
-    }
+    
+    // Registrar nuevo usuario
+    User *new_user = &users[user_count];
+    strncpy(new_user->username, username, MAX_USERNAME - 1);
+    strncpy(new_user->status, status, MAX_STATUS - 1);
+    strncpy(new_user->IP, ip, 49);
+    new_user->wsi = wsi;
+    
+    user_count++;
+    pthread_mutex_unlock(&users_mutex);
+    
+    return 0;
 }
 
 
-static struct lws *clients[MAX_CLIENTS] = {NULL};
 
+// Callback del servidor
 static int callback_chat(struct lws *wsi, enum lws_callback_reasons reason,
                          void *user, void *in, size_t len) {
     switch (reason) {
-        //Cuando un cliente se conecta, agregar a la  lista de clientes
         case LWS_CALLBACK_ESTABLISHED:
-            lwsl_user("Client connected\n");
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (clients[i] == NULL) {
-                clients[i] = wsi;
-                break;
-            }
-        }
-        break;
+            printf("Cliente conectado\n");
+            break;
 
-
-        //cuando recibe un mensaje, se reenvia a los demas clientes
-        case LWS_CALLBACK_RECEIVE:
-            lwsl_user("Received: %s\n", (char *)in);
-
+        case LWS_CALLBACK_RECEIVE: {
+            // Parsear mensaje JSON
             cJSON *json = cJSON_Parse((char *)in);
-
             if (!json) {
-                lwsl_err("Error al parsear JSON\n");
+                printf("Error al parsear JSON\n");
                 break;
             }
 
             const cJSON *type = cJSON_GetObjectItem(json, "type");
             
-            //registrar usuarios
-            if (strcmp(type->valuestring, "register") == 0) {
-
-                handleRegister(wsi, json);
-            
-
-            }else{
-
-                for (int i = 0; i < MAX_CLIENTS; i++) {
-                    if (clients[i] && clients[i] != wsi) {
-                        lws_write(clients[i], (unsigned char *)in, len, LWS_WRITE_TEXT);
+            if (type && type->valuestring) {
+                char ip[50];
+                lws_get_peer_simple(wsi, ip, sizeof(ip));
+                
+                if (strcmp(type->valuestring, "register") == 0) {
+                    const cJSON *username = cJSON_GetObjectItem(json, "username");
+                    const cJSON *status = cJSON_GetObjectItem(json, "status");
+                    
+                    if (username && status) {
+                        int result = register_user(username->valuestring, 
+                                                   status->valuestring, 
+                                                   ip, wsi);
+                        
+                        cJSON *response = cJSON_CreateObject();
+                        cJSON_AddStringToObject(response, "type", "register_response");
+                        
+                        if (result == 0) {
+                            cJSON_AddStringToObject(response, "message", "Registro exitoso");
+                        } else if (result == -1) {
+                            cJSON_AddStringToObject(response, "message", "Usuario ya existe");
+                        } else {
+                            cJSON_AddStringToObject(response, "message", "Límite de usuarios alcanzado");
+                        }
+                        
+                        char *json_str = cJSON_Print(response);
+                        unsigned char buf[LWS_PRE + strlen(json_str) + 1];
+                        unsigned char *p = &buf[LWS_PRE];
+                        strcpy((char*)p, json_str);
+                        
+                        lws_write(wsi, p, strlen(json_str), LWS_WRITE_TEXT);
+                        
+                        free(json_str);
+                        cJSON_Delete(response);
                     }
                 }
+                
             }
-
+            
             cJSON_Delete(json);
             break;
+        }
 
-        case LWS_CALLBACK_SERVER_WRITEABLE:
-
-            for (int i = 0; i < MAX_USERS; i++) {
-                if (Users[i].wsi == wsi && Users[i].has_pending_msg) {
-                    unsigned char buf[LWS_PRE + 1024];
-                    size_t msg_len = strlen(Users[i].pending_msg);
-                    memcpy(&buf[LWS_PRE], Users[i].pending_msg, msg_len);
-                    lws_write(wsi, &buf[LWS_PRE], msg_len, LWS_WRITE_TEXT);
-                    Users[i].has_pending_msg = 0;
+        case LWS_CALLBACK_CLOSED: {
+            // Eliminar usuario desconectado
+            pthread_mutex_lock(&users_mutex);
+            for (int i = 0; i < user_count; i++) {
+                if (users[i].wsi == wsi) {
+                    // Mover último usuario a esta posición
+                    users[i] = users[user_count - 1];
+                    user_count--;
                     break;
                 }
             }
-
-        break;
-
-
-        //cuendo un cliente se desconecta  se elimina de la lista de clientes
-        case LWS_CALLBACK_CLOSED:
-            lwsl_user("Client disconnected\n");
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (clients[i] == wsi) {
-                clients[i] = NULL;
-                break;
-            }
+            pthread_mutex_unlock(&users_mutex);
+            
+            printf("Cliente desconectado\n");
+            break;
         }
-        break;
 
         default:
             break;
@@ -263,43 +162,34 @@ static int callback_chat(struct lws *wsi, enum lws_callback_reasons reason,
     return 0;
 }
 
-//Definir el protocolo del chat y asociar con el callback
+//definicion de protocolos
 static const struct lws_protocols protocols[] = {
     {"chat-protocol", callback_chat, 0, 4096},
     {NULL, NULL, 0, 0}
 };
 
 int main() {
-    //declarar la variable info, que es una estructura para configurar el contexto de websocket
     struct lws_context_creation_info info;
-    //inicializar los campos de la estructuta a 0
     memset(&info, 0, sizeof(info));
-    //configuracion de puertos y protocolos
+    
     info.port = 9000;
     info.protocols = protocols;
-    //creacion de contexto del servidor websocket 
-    //el contexto es el entorno en donde el servidor de websocket opera
-    struct lws_context *context = lws_create_context(&info);
+    info.gid = -1;
+    info.uid = -1;
 
-    //verificacion de la creacion del contexto
+    struct lws_context *context = lws_create_context(&info);
+    
     if (!context) {
-        lwsl_err("Failed to create WebSocket context\n");
+        fprintf(stderr, "Error al crear contexto de WebSocket\n");
         return -1;
     }
 
-    lwsl_user("WebSocket server started on ws://localhost:9000\n");
-
+    printf("Servidor de chat iniciado en ws://localhost:9000\n");
     
-
     while (1) {
-        //servivio del contexto
-        //el 100 es el tiempo de espera para la funcion para ejecutar las conextiones y mensajes de los clientes
         lws_service(context, 50);
-
-        menu();
     }
 
-    //destruir el contexto
     lws_context_destroy(context);
     return 0;
 }
