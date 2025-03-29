@@ -32,7 +32,7 @@ uso del multithreading: -en aceptar mensajes, inactividad y las conexiones en pa
 #define MAX_CLIENTS 100
 #define MAX_USERNAME 50
 #define MAX_STATUS 20
-#define INACTIVITY_TIMEOUT 120
+#define INACTIVITY_TIMEOUT 120 
 
 //estructura de ususrios
 typedef struct {
@@ -63,32 +63,32 @@ User* find_user_by_username(const char* username) {
 }
 //validar estatus
 int is_valid_status(const char* status) {
-    return (strcmp(status, "ACTIVO") == 0 ||
-            strcmp(status, "OCUPADO") == 0 ||
+    return (strcmp(status, "ACTIVO") == 0 || 
+            strcmp(status, "OCUPADO") == 0 || 
             strcmp(status, "INACTIVO") == 0);
 }
 
 //actualizar status
 void update_user_status(struct lws *wsi, const char* new_status) {
     pthread_mutex_lock(&users_mutex);
-
+    
     for (int i = 0; i < user_count; i++) {
         if (users[i].wsi == wsi) {
             // validacion del estatus
             if (is_valid_status(new_status)) {
                 strncpy(users[i].status, new_status, MAX_STATUS - 1);
-
+                
                 //enviar respuesta de cambio de status a todos los clientes
                 cJSON *status_change = cJSON_CreateObject();
                 cJSON_AddStringToObject(status_change, "type", "status_change");
                 cJSON_AddStringToObject(status_change, "username", users[i].username);
                 cJSON_AddStringToObject(status_change, "status", new_status);
-
+                
                 //cambio de status
                 for (int j = 0; j < user_count; j++) {
                     send_json(users[j].wsi, status_change);
                 }
-
+                
                 cJSON_Delete(status_change);
             } else {
                 // invalido
@@ -101,7 +101,7 @@ void update_user_status(struct lws *wsi, const char* new_status) {
             break;
         }
     }
-
+    
     pthread_mutex_unlock(&users_mutex);
 }
 
@@ -109,30 +109,30 @@ void update_user_status(struct lws *wsi, const char* new_status) {
 void* check_inactivity(void* arg) {
     while (1) {
         sleep(60); // Revisar cada minuto
-
+        
         pthread_mutex_lock(&users_mutex);
         time_t current_time = time(NULL);
-
+        
         for (int i = 0; i < user_count; i++) {
             // Si ha pasado más de 5 minutos sin actividad
             if (current_time - users[i].last_activity > INACTIVITY_TIMEOUT) {
                 strncpy(users[i].status, "INACTIVO", MAX_STATUS - 1);
-
+                
                 // Notificar cambio de status
                 cJSON *status_change = cJSON_CreateObject();
                 cJSON_AddStringToObject(status_change, "type", "status_change");
                 cJSON_AddStringToObject(status_change, "username", users[i].username);
                 cJSON_AddStringToObject(status_change, "status", "INACTIVO");
-
+                
                 // Broadcast del cambio de status
                 for (int j = 0; j < user_count; j++) {
                     send_json(users[j].wsi, status_change);
                 }
-
+                
                 cJSON_Delete(status_change);
             }
         }
-
+        
         pthread_mutex_unlock(&users_mutex);
     }
     return NULL;
@@ -166,9 +166,9 @@ int register_user(const char* username, const char* status, const char* ip, stru
     } else {
         strncpy(new_user->status, status, MAX_STATUS - 1);
     }
-
+    
     strncpy(new_user->ip, ip, sizeof(new_user->ip) - 1);
-    new_user->last_activity = time(NULL);
+    new_user->last_activity = time(NULL); 
 
     new_user->wsi = wsi;
     user_count++;
@@ -249,7 +249,7 @@ void send_private_message(const char* from, const char* to, const char* message)
         cJSON_AddStringToObject(private_msg, "message", message);
         send_json(recipient->wsi, private_msg);
         cJSON_Delete(private_msg);
-
+        
 
     }
     pthread_mutex_unlock(&users_mutex);
@@ -268,7 +268,7 @@ void broadcast_message(const char* from, const char* message) {
         size_t len = strlen(json_str);
         memcpy(p, json_str, len);
         lws_write(users[i].wsi, p, len, LWS_WRITE_TEXT);
-
+        
     }
     free(json_str);
     cJSON_Delete(group_msg);
@@ -340,7 +340,7 @@ static int callback_chat(struct lws *wsi, enum lws_callback_reasons reason,
                 if (from && message) {
                     broadcast_message(from->valuestring, message->valuestring);
                 }
-            }
+            } 
             //mensajes privados
             else if (strcmp(type->valuestring, "private") == 0) {
                 const cJSON *from = cJSON_GetObjectItem(json, "from");
@@ -357,7 +357,7 @@ static int callback_chat(struct lws *wsi, enum lws_callback_reasons reason,
                     update_user_status(wsi, status->valuestring);
                 }
             }
-
+            
 
             cJSON_Delete(json);
             break;
@@ -400,11 +400,12 @@ static struct lws_protocols protocols[] = {
     { NULL, NULL, 0, 0 }
 };
 
-// Hilo que ejecuta lws_service, en este lo que pasa es que recibe los mensajes de los clientes conectados
+// Hilo que ejecuta lws_service, en este lo que pasa es que recibe los mensajes de los clientes conectados 
 void *websocket_service_thread(void *arg) {
     while (1) {
         //el verdadero hilo, este acepta nuevas conexiones y ve si hay nuevos datos al cliente, llama al callback si pasa algo nuevo
         lws_service(context, 100); //porque lo que hace esta instruccion es procesar eventos en el web socket
+        // printf("Esperando eventos...\n");
     }
     return NULL;
 }
@@ -448,7 +449,6 @@ int main(int argc, char *argv[]) {
     pthread_t service_thread;
     pthread_create(&service_thread, NULL, websocket_service_thread, NULL);
 
-    printf("Servidor WebSocket escuchando en ws://localhost:8080\n");
 
     pthread_join(service_thread, NULL);
     lws_context_destroy(context);
