@@ -1,34 +1,8 @@
-/*
-ejecutar por medio de:
-<nombredelcliente><nombredeusuario><IPdelservidor>
-<puertodelservidor>
 
-<nombredelcliente> es el nombre del programa
-<IPdelservidor> y<puertodelservidor> es a donde tiene que llegar la solicitud de conexion del cliente 
-
-el cliente tenfra la interfaz para que le de opcion de:
-- chatear con otros usuarios
-- enviar y recibir mensajes directos, privados, aparte del chat general
-- cambiar de status
-- listar los usuarios conectados al sistema de chat
-- desplegar  informacion de un usuario en particulas
-- ayuda 
-- salir
-
-para chatear tiene que tener el formato <usuario><mensaje>
-el status permite al cliente elegir entre activo, ocupado e inactivo
-la eleccion envia una solicitud de actualizacion de informacion al servidor y el listado de usuarios se desplegara.
-
-componentes del cliente:
-- chateo general con usuarios
-- chateo privado con multithreading
-- cambio de status
-- listado de usuarios e informacion de un usuario
-
-*/
 #include <libwebsockets.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <pthread.h> //mi real esta libreria
 #include <cjson/cJSON.h> //para parcear a cjson
@@ -39,10 +13,8 @@ componentes del cliente:
 
 // Variables globales
 static struct lws *web_socket = NULL;
-
 static char current_username[MAX_USERNAME] = {0};
 static char current_status[MAX_STATUS] = "activo";
-
 static int should_exit = 0;
 
 // Estructura para pasarle argumentos al hilo de websocket
@@ -50,17 +22,83 @@ struct thread_args {
     struct lws_context *context;
 };
 
+void enviar_json(cJSON *json, struct lws *wsi) {
+    char *msg_str = cJSON_PrintUnformatted(json);
+    size_t len = strlen(msg_str);
+    unsigned char *buffer = malloc(LWS_PRE + len);
+    memcpy(buffer + LWS_PRE, msg_str, len);
+
+    lws_callback_on_writable(wsi);
+    lws_write(wsi, buffer + LWS_PRE, len, LWS_WRITE_TEXT);
+
+    free(buffer);
+    free(msg_str);
+    cJSON_Delete(json);
+}
+
+// Función para obtener el timestamp actual en formato de texto
+void get_current_timestamp(char *timestamp, size_t size) {
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+
+    strftime(timestamp, size, "%Y-%m-%d %H:%M:%S", tm_info);
+}
+
+// Función para cambiar el status
+int change_status(struct lws *wsi) {
+    // Crear objeto JSON
+    char msg[MAX_MESSAGE];
+    cJSON *json = cJSON_CreateObject();
+    if (json == NULL) {
+        printf("Error al crear el objeto JSON.\n");
+        return -1;
+    }
+    printf("MENSAJE: ", MAX_MESSAGE - 1);
+    fgets(msg, sizeof(msg), stdin);
+    msg[strcspn(msg, "\n")] = '\0';  // Eliminar salto de línea
+
+    // Solicitar el nuevo estado
+    strcpy(msg, "Nuevo estado:");
+    printf("%s ", msg);
+
+    char estado[32];
+    fgets(estado, sizeof(estado), stdin);
+    estado[strcspn(estado, "\n")] = '\0';  // Eliminar salto de línea de fgets
+
+    // Validar el estado
+    if (strcmp(estado, "ACTIVO") != 0 &&
+        strcmp(estado, "OCUPADO") != 0 &&
+        strcmp(estado, "INACTIVO") != 0) {
+        printf("Status inválido. Manteniendo el status actual.\n");
+        cJSON_Delete(json);
+        return -1;
+        }
+
+    // Añadir los campos al objeto JSON
+    cJSON_AddStringToObject(json, "type", "change_status");
+    cJSON_AddStringToObject(json, "username", current_username);
+    cJSON_AddStringToObject(json, "status", estado);
+
+    // Enviar el JSON
+    enviar_json(json, wsi);
+
+    // Actualizar el status local
+    strcpy(current_status, estado);
+    printf("Status cambiado a: %s\n", current_status);
+
+    // Liberar memoria
+    cJSON_Delete(json);
+
+    return 0;
+}
+
 
 //registro
-int register_user(struct lws *wsi) {
-    printf("\nIngrese nombre de usuario: ");
-    scanf("%49s", current_username);
-    printf("Ingrese status (activo/ocupado/inactivo): ");
-    scanf("%19s", current_status);
+int register_user(struct lws *wsi, const char *curren_username) {
 
     //validar status
-    if (strcmp(current_status, "activo") != 0 && 
-        strcmp(current_status, "ocupado") != 0 && 
+    if (strcmp(current_status, "activo") != 0 &&
+        strcmp(current_status, "ocupado") != 0 &&
         strcmp(current_status, "inactivo") != 0) {
         printf("Status invalido, se va a poner el default como 'activo'.\n");
         strcpy(current_status, "activo");
@@ -68,8 +106,8 @@ int register_user(struct lws *wsi) {
 
     //prepararmensaje JSON de registro
     char message[256];
-    snprintf(message, sizeof(message), 
-        "{\"type\":\"register\", \"username\":\"%s\", \"status\":\"%s\"}", 
+    snprintf(message, sizeof(message),
+        "{\"type\":\"register\", \"username\":\"%s\", \"status\":\"%s\"}",
         current_username, current_status);
 
     //eviar mensaje de registro
@@ -82,10 +120,222 @@ int register_user(struct lws *wsi) {
 }
 
 
+// Enviar mensaje como JSON
+int send_group_message(struct lws *wsi) {
+    if (strlen(current_username) == 0) {
+        printf("Debes registrarte primero.\n");
+        return -1;
+    }
+
+    char msg[MAX_MESSAGE];
+    int exit_chat = 0;
+
+    while (!exit_chat) {
+        // Solicitar el mensaje del usuario
+        fgets(msg, sizeof(msg), stdin);
+        msg[strcspn(msg, "\n")] = '\0';  // Eliminar salto de línea
+
+        if (strcmp(msg, "salir") == 0) {
+            printf("Saliendo del chat...\n");
+            exit_chat = 1;  // Salir del chat
+            continue;
+        }
+
+        // Obtener el timestamp actual
+        char timestamp[MAX_MESSAGE];
+        get_current_timestamp(timestamp, sizeof(timestamp));
+
+        // Crear el objeto JSON
+        cJSON *json = cJSON_CreateObject();
+        if (json == NULL) {
+            printf("Error al crear el objeto JSON.\n");
+            return -1;
+        }
+
+        // Añadir los campos al objeto JSON
+        cJSON_AddStringToObject(json, "type", "broadcast");
+        cJSON_AddStringToObject(json, "sender", current_username);
+        cJSON_AddStringToObject(json, "content", msg);
+        cJSON_AddStringToObject(json, "timestamp", timestamp);
+
+        // Convertir el objeto JSON a una cadena
+        char *json_string = cJSON_PrintUnformatted(json);
+        if (json_string == NULL) {
+            printf("Error al convertir JSON a cadena.\n");
+            cJSON_Delete(json);
+            return -1;
+        }
+
+        // Enviar el mensaje JSON por WebSocket
+        size_t json_length = strlen(json_string);
+        unsigned char buf[LWS_PRE + json_length];  // Tamaño adecuado para el buffer
+        unsigned char *p = &buf[LWS_PRE];
+        size_t n = snprintf((char *)p, json_length + 1, "%s", json_string);  // Incluye '\0' en el tamaño
+
+        if (n < 0 || n > json_length) {
+            printf("Error al formar el mensaje JSON.\n");
+            free(json_string);
+            cJSON_Delete(json);
+            return -1;
+        }
+
+        // Enviar los datos a través del WebSocket
+        lws_write(wsi, p, n, LWS_WRITE_TEXT);
+
+        // Liberar memoria
+        free(json_string);
+        cJSON_Delete(json);
+    }
+
+    return 0;
+}
+
+
+// Función para enviar un mensaje privado
+int send_private_message(struct lws *wsi) {
+    if (strlen(current_username) == 0) {
+        printf("Debes registrarte primero.\n");
+        return -1;
+    }
+
+    char target_username[MAX_USERNAME];
+    char message[MAX_MESSAGE];
+
+    // Solicitar el nombre de usuario del destinatario
+    printf("Ingrese nombre de usuario destinatario: ");
+    scanf("%49s", target_username);
+
+    // Solicitar el mensaje
+    printf("Escriba su mensaje (máximo %d caracteres): ", MAX_MESSAGE - 1);
+    scanf(" %[^\n]", message);
+
+    // Crear objeto JSON
+    cJSON *json = cJSON_CreateObject();
+    if (json == NULL) {
+        printf("Error al crear el objeto JSON.\n");
+        return -1;
+    }
+
+    // Obtener el timestamp actual
+    char timestamp[MAX_MESSAGE];
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    // Añadir los campos al objeto JSON
+    cJSON_AddStringToObject(json, "type", "private");
+    cJSON_AddStringToObject(json, "sender", current_username);
+    cJSON_AddStringToObject(json, "target", target_username);
+    cJSON_AddStringToObject(json, "content", message);
+    cJSON_AddStringToObject(json, "timestamp", timestamp);
+
+    // Convertir el objeto JSON a una cadena
+    char *json_string = cJSON_PrintUnformatted(json);
+    if (json_string == NULL) {
+        printf("Error al convertir JSON a cadena.\n");
+        cJSON_Delete(json);
+        return -1;
+    }
+
+    // Mostrar el JSON generado para depuración
+    printf("JSON generado: %s\n", json_string);
+
+    // Enviar el mensaje JSON por WebSocket
+    unsigned char buf[LWS_PRE + strlen(json_string)+1];
+    unsigned char *p = &buf[LWS_PRE];
+    size_t n = snprintf((char *)p, sizeof(buf) - LWS_PRE, "%s", json_string);
+
+    // Asegurarse de que el tamaño del mensaje no sea mayor que el buffer
+    if (n > sizeof(buf) - LWS_PRE) {
+        printf("Error: El mensaje es demasiado grande para el buffer.\n");
+        free(json_string);
+        cJSON_Delete(json);
+        return -1;
+    }
+
+    // Enviar el mensaje por WebSocket
+    lws_write(wsi, p, n, LWS_WRITE_TEXT);
+
+    // Liberar memoria
+    free(json_string);
+    cJSON_Delete(json);
+
+    return 0;
+}
+
+// Solicitar lista de usuarios
+int list_users(struct lws *wsi) {
+    // Crear objeto JSON
+    cJSON *json = cJSON_CreateObject();
+    if (json == NULL) {
+        printf("Error al crear el objeto JSON.\n");
+        return -1;
+    }
+
+    // Añadir los campos al objeto JSON
+    cJSON_AddStringToObject(json, "type", "list_users");
+    cJSON_AddStringToObject(json, "sender", current_username);  // Usando el nombre de usuario actual
+
+    // Convertir el objeto JSON a una cadena
+    char *json_string = cJSON_PrintUnformatted(json);
+    if (json_string == NULL) {
+        printf("Error al convertir JSON a cadena.\n");
+        cJSON_Delete(json);
+        return -1;
+    }
+
+    // Enviar el JSON
+    enviar_json(json, wsi);
+
+    // Liberar memoria
+    free(json_string);
+    cJSON_Delete(json);
+
+    return 0;
+}
+
+
+// Mostrar información de un usuario específico
+int user_info(struct lws *wsi) {
+    char target_username[MAX_USERNAME];
+    printf("Ingrese nombre de usuario para ver información: ");
+    scanf("%49s", target_username);
+
+    // Crear objeto JSON
+    cJSON *json = cJSON_CreateObject();
+    if (json == NULL) {
+        printf("Error al crear el objeto JSON.\n");
+        return -1;
+    }
+
+    // Añadir los campos al objeto JSON
+    cJSON_AddStringToObject(json, "type", "user_info");
+    cJSON_AddStringToObject(json, "sender", current_username);  // Usando el nombre de usuario actual
+    cJSON_AddStringToObject(json, "target", target_username);    // Nombre del usuario objetivo
+
+    // Convertir el objeto JSON a una cadena
+    char *json_string = cJSON_PrintUnformatted(json);
+    if (json_string == NULL) {
+        printf("Error al convertir JSON a cadena.\n");
+        cJSON_Delete(json);
+        return -1;
+    }
+
+    // Enviar el JSON
+    enviar_json(json, wsi);
+
+    // Liberar memoria
+    free(json_string);
+    cJSON_Delete(json);
+
+    return 0;
+}
+
+
+
 //ayuda
 void show_help() {
     printf("\n===== AYUDA DEL CHAT 3000 =====\n");
-    printf("\n1. Registrarse: Ingresa al sistema con un nombre de usuario\n");
     printf("\n2. Chat general: Envía mensajes a todos los usuarios\n");
     printf("\n3. Mensaje privado: Envía mensajes directos a un usuario\n");
     printf("\n4. Cambiar status: Modifica tu estado (activo/ocupado/inactivo)\n");
@@ -100,7 +350,6 @@ void menu(struct lws *wsi) {
     int opcion;
     printf("\n======= BIENVENIDO AL CHAT 3000 🤑 ===========");
     printf("\nOpciones: ");
-    printf("\n1. Registrarse");
     printf("\n2. Chatear con otros usuarios");
     printf("\n3. Enviar mensaje privado");
     printf("\n4. Cambiar de status");
@@ -110,29 +359,32 @@ void menu(struct lws *wsi) {
     printf("\n8. Salir");
 	printf("\n");
     printf("\nEscoga una opcion: ");
-    scanf("%d", &opcion); 
+    scanf("%d", &opcion);
 
     switch (opcion) {
-        case 1: 
-			register_user(wsi); 
+
+        case 2:
+            send_group_message(wsi);
 			break;
-        case 2: 
+        case 3:
+                send_private_message(wsi);
 			break;
-        case 3: 
+        case 4:
+            change_status(wsi);
 			break;
-        case 4: 
-			break;
-        case 5: 
-			break;
-        case 6: 
-			break;
-        case 7: 
-			show_help(); 
-			break;
-        case 8: 
+        case 5:
+            list_users(wsi);
+        break;
+        case 6:
+            user_info(wsi);
+        break;
+        case 7:
+            show_help();
+        break;
+        case 8:
             printf("👋 Chao\n");
-            should_exit = 1;
-            break;
+        should_exit = 1;  // Cambia el valor para salir del bucle
+        break;
         default:
             printf("Opción no valida, vuelva a intentarlo\n");
             break;
@@ -140,28 +392,89 @@ void menu(struct lws *wsi) {
 }
 
 // Callback del cliente
-static int callback_client(struct lws *wsi, enum lws_callback_reasons reason, 
+static int callback_client(struct lws *wsi, enum lws_callback_reasons reason,
                            void *user, void *in, size_t len) {
     switch(reason) {
         case LWS_CALLBACK_CLIENT_ESTABLISHED:
-            printf("Conexion establecida con el servidor.\n");
-            lws_callback_on_writable(wsi);
+            printf("✅ Conectado al servidor\n");
+
+
+            cJSON *registro = cJSON_CreateObject();
+            cJSON_AddStringToObject(registro, "type", "register");
+            cJSON_AddStringToObject(registro, "sender", current_username);
+            cJSON_AddNullToObject(registro, "content");
+            enviar_json(registro, wsi);
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
-            //parsear mensaje JSON recibido
+            // Convertimos los datos recibidos en formato JSON
             cJSON *json = cJSON_Parse((char *)in);
+
             if (json) {
                 const cJSON *type = cJSON_GetObjectItem(json, "type");
-                
                 if (type && type->valuestring) {
-                    if (strcmp(type->valuestring, "register_response") == 0) {
-                        const cJSON *message = cJSON_GetObjectItem(json, "message");
-                        printf("%s\n", message ? message->valuestring : "Registro procesado");
+                    // Verificamos si es un mensaje de tipo "broadcast"
+                    if (strcmp(type->valuestring, "broadcast") == 0) {
+                        const cJSON *sender = cJSON_GetObjectItem(json, "sender");
+                        const cJSON *content = cJSON_GetObjectItem(json, "content");
+                        const cJSON *timestamp = cJSON_GetObjectItem(json, "timestamp");
+
+                        // Si existen los elementos necesarios, imprimimos el mensaje
+                        if (sender && content && timestamp) {
+                            printf("[%s] %s: %s\n", timestamp->valuestring, sender->valuestring, content->valuestring);
+                        }
                     }
-                    
+                    //  Si es una lista de usuarios
+                    if (strcmp(type->valuestring, "list_users_response") == 0) {
+                        const cJSON *users = cJSON_GetObjectItem(json, "content");
+                        if (cJSON_IsArray(users)) {
+                            printf(" Lista de usuarios conectados:\n");
+
+                            int num_users = cJSON_GetArraySize(users);
+                            for (int i = 0; i < num_users; i++) {
+                                cJSON *user = cJSON_GetArrayItem(users, i);
+                                if (cJSON_IsString(user)) {
+                                    printf("🔹 %s\n", user->valuestring);
+                                }
+                            }
+                            printf(" Total de usuarios: %d\n", num_users);
+                        } else {
+                            printf(" No se encontró la lista de usuarios.\n");
+                        }
+                    }
+                    // Si es un mensaje privado
+                    else if (strcmp(type->valuestring, "private") == 0) {
+                        const cJSON *sender = cJSON_GetObjectItem(json, "sender");
+                        const cJSON *target = cJSON_GetObjectItem(json, "target");
+                        const cJSON *content = cJSON_GetObjectItem(json, "content");
+                        const cJSON *timestamp = cJSON_GetObjectItem(json, "timestamp");
+
+                        if (sender && content && timestamp) {
+                            // Imprimimos el mensaje privado
+                            printf("[Privado de: %s] [%s] %s: %s\n", sender->valuestring,timestamp->valuestring,  target->valuestring,content->valuestring);
+                        }
+                    }
                 }
-                
+                // Si es una respuesta de información del usuario
+                else if (strcmp(type->valuestring, "user_info_response") == 0) {
+                    const cJSON *sender = cJSON_GetObjectItem(json, "sender");
+                    const cJSON *target = cJSON_GetObjectItem(json, "target");
+                    const cJSON *content = cJSON_GetObjectItem(json, "content");
+                    const cJSON *timestamp = cJSON_GetObjectItem(json, "timestamp");
+
+                    if (sender && target && content && timestamp) {
+                        const cJSON *ip = cJSON_GetObjectItem(content, "ip");
+                        const cJSON *status = cJSON_GetObjectItem(content, "status");
+
+                        if (ip && status) {
+                            printf("[INFO] [%s] Usuario: %s (Solicitado por: %s)\n", timestamp->valuestring, target->valuestring, sender->valuestring);
+                            printf("      📡 IP: %s\n", ip->valuestring);
+                            printf("      🔹 Estado: %s\n", status->valuestring);
+                        }
+                    }
+                }
+
+                // Liberamos el objeto JSON después de usarlo
                 cJSON_Delete(json);
             }
             break;
@@ -169,9 +482,9 @@ static int callback_client(struct lws *wsi, enum lws_callback_reasons reason,
 
         case LWS_CALLBACK_CLIENT_CLOSED:
         case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-            web_socket = NULL;
-            printf("Conexion cerrada o error de conexion.\n");
-            break;
+            printf("Conexión cerrada o error en la conexión.\n");
+        web_socket = NULL;
+        break;
 
         default:
             break;
@@ -185,19 +498,12 @@ enum protocols {
     PROTOCOL_COUNT
 };
 
+// Protocolo WebSocket
 static struct lws_protocols protocols[] = {
-
-	{
-        .name                  = "chat-protocol", // nombre del protocolo
-        .callback              = callback_client,   // define la funcion de callbak con el procolo
-        .per_session_data_size = 0,                  //  tamanio de los datos por sesion 
-        .rx_buffer_size        = 0,                  //  tamanio del buffer de recepcion, el 0 es que no hay restriccion de tam
-        .id                    = 0,                  // id de la version del protocolo, puede ser opcionsl
-        .user                  = NULL,               // puntero a los datos de usuario que pueden ser accesibles
-        .tx_packet_size        = 0                   // restriccion del tamanio del buffer de transmicion
-    },
-    LWS_PROTOCOL_LIST_TERM // terminador,  final del protocolo
+    { "chat-protocol", callback_client, 0, MAX_MESSAGE },
+    { NULL, NULL, 0, 0 }
 };
+
 
 //manejar eventos de websocket con hilos
 void* websocket_thread(void* arg) {
@@ -211,8 +517,21 @@ void* websocket_thread(void* arg) {
     return NULL;
 }
 
+
 int main(int argc, char *argv[]) {
-    // configuracion de contexto de websocket
+    if (argc != 4) {
+        fprintf(stderr, "Uso: %s <nombredeusuario> <IPdelservidor> <puertodelservidor>\n", argv[0]);
+        return -1;
+    }
+
+    // Asignar el nombre de usuario desde el parámetro
+    strncpy(current_username, argv[1], MAX_USERNAME - 1);
+    current_username[MAX_USERNAME - 1] = '\0';  // Asegurarse de que el nombre esté correctamente terminado
+
+    const char *server_ip = argv[2];
+    int server_port = atoi(argv[3]);
+
+    // Configuración de contexto de websocket
     struct lws_context_creation_info info;
     struct lws_client_connect_info ccinfo = {0};
     struct lws *wsi;
@@ -228,10 +547,10 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    //conexion de cliente
+    // Configuración de la conexión de cliente WebSocket
     ccinfo.context = context;
-    ccinfo.address = "localhost";
-    ccinfo.port = 9000;
+    ccinfo.address = server_ip;
+    ccinfo.port = server_port;
     ccinfo.path = "/";
     ccinfo.host = lws_canonical_hostname(context);
     ccinfo.origin = "origin";
@@ -245,18 +564,23 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    //crear hilo para manejar eventos de websocket
-    pthread_t ws_thread_id;
+    // Crear un hilo para manejar la conexión WebSocket
+    pthread_t thread;
     struct thread_args args = { context };
-    pthread_create(&ws_thread_id, NULL, websocket_thread, &args);
+    if (pthread_create(&thread, NULL, websocket_thread, &args) != 0) {
+        fprintf(stderr, "Error al crear el hilo del WebSocket.\n");
+        lws_context_destroy(context);
+        return -1;
+    }
 
-    //menu 
+    // Mostrar el menú después de la conexión
     while (!should_exit) {
         menu(wsi);
     }
 
-    //limpiar
-    pthread_join(ws_thread_id, NULL);
+    // Limpiar recursos antes de salir
+    pthread_join(thread, NULL);
     lws_context_destroy(context);
+
     return 0;
 }

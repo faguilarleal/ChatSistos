@@ -227,7 +227,7 @@ int main() {
     struct lws_context_creation_info info;
     memset(&info, 0, sizeof(info));
 
-    info.port = 9000;
+    info.port = 8080;
     info.protocols = protocols;
     info.gid = -1;
     info.uid = -1;
@@ -243,7 +243,7 @@ int main() {
     pthread_t service_thread;
     pthread_create(&service_thread, NULL, websocket_service_thread, NULL);
 
-    printf("Servidor WebSocket escuchando en ws://localhost:9000\n");
+    printf("Servidor WebSocket escuchando en ws://localhost:8080\n");
 
     pthread_join(service_thread, NULL);
     lws_context_destroy(context);
