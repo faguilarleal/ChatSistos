@@ -19,6 +19,8 @@ Servicios:
 - Cambio de estatus
 - Boracasting y mensajes directos
 
+uso del multithreading: -en aceptar mensajes, inactividad y las conexiones en paralelo
+
 */
 #include <libwebsockets.h>
 #include <pthread.h>
@@ -39,7 +41,6 @@ typedef struct {
     char ip[50];
     struct lws *wsi;
     time_t last_activity;
-    // char message[MAX_STATUS];
 } User;
 
 User users[MAX_CLIENTS];
@@ -243,6 +244,8 @@ void send_private_message(const char* from, const char* to, const char* message)
         cJSON_AddStringToObject(private_msg, "message", message);
         send_json(recipient->wsi, private_msg);
         cJSON_Delete(private_msg);
+        
+
     }
     pthread_mutex_unlock(&users_mutex);
 }
@@ -260,6 +263,7 @@ void broadcast_message(const char* from, const char* message) {
         size_t len = strlen(json_str);
         memcpy(p, json_str, len);
         lws_write(users[i].wsi, p, len, LWS_WRITE_TEXT);
+        
     }
     free(json_str);
     cJSON_Delete(group_msg);
@@ -267,7 +271,7 @@ void broadcast_message(const char* from, const char* message) {
 }
 
 
-// WebSocket callback
+// WebSocket callback, este es el controlador de eventos
 static int callback_chat(struct lws *wsi, enum lws_callback_reasons reason,
                          void *user, void *in, size_t len) {
     switch (reason) {
@@ -324,6 +328,7 @@ static int callback_chat(struct lws *wsi, enum lws_callback_reasons reason,
                     send_user_info(wsi, username->valuestring);
                 }
             }
+            //broadcast
             else if (strcmp(type->valuestring, "broadcast") == 0) {
                 const cJSON *from = cJSON_GetObjectItem(json, "from");
                 const cJSON *message = cJSON_GetObjectItem(json, "message");
@@ -331,6 +336,7 @@ static int callback_chat(struct lws *wsi, enum lws_callback_reasons reason,
                     broadcast_message(from->valuestring, message->valuestring);
                 }
             } 
+            //mensajes privados
             else if (strcmp(type->valuestring, "private") == 0) {
                 const cJSON *from = cJSON_GetObjectItem(json, "from");
                 const cJSON *to = cJSON_GetObjectItem(json, "to");
@@ -339,6 +345,7 @@ static int callback_chat(struct lws *wsi, enum lws_callback_reasons reason,
                     send_private_message(from->valuestring, to->valuestring, message->valuestring);
                 }
             }
+            //cambiar el estatus
             else if (strcmp(type->valuestring, "status_change") == 0) {
                 const cJSON *status = cJSON_GetObjectItem(json, "status");
                 if (status) {
@@ -388,23 +395,39 @@ static struct lws_protocols protocols[] = {
     { NULL, NULL, 0, 0 }
 };
 
-// Hilo que ejecuta lws_service
+// Hilo que ejecuta lws_service, en este lo que pasa es que recibe los mensajes de los clientes conectados 
 void *websocket_service_thread(void *arg) {
     while (1) {
-        lws_service(context, 100);
+        //el verdadero hilo, este acepta nuevas conexiones y ve si hay nuevos datos al cliente, llama al callback si pasa algo nuevo
+        lws_service(context, 100); //porque lo que hace esta instruccion es procesar eventos en el web socket
     }
     return NULL;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+
+    if (argc < 3) {
+        fprintf(stderr, "Uso: %s <nombre_del_servidor> <puerto>\n", argv[0]);
+        return 1;
+    }
+
+    //tomar los argumentos
+    const char* server_name = argv[1];
+    int port = atoi(argv[2]);
+
+    printf("iniciando servidor '%s' en el puerto %d ... \n", server_name, port);
+
+    //declara una estructura llamdad info de websocket
     struct lws_context_creation_info info;
+    //pone los campos de info en 0, para limpiarlo
     memset(&info, 0, sizeof(info));
 
-    info.port = 9000;
+    info.port = port;
     info.protocols = protocols;
     info.gid = -1;
     info.uid = -1;
 
+    //el contexto tiene configuracion del puerto, estado del servidor de ws y conexiones activas
     context = lws_create_context(&info);
 
     if (!context) {
