@@ -178,12 +178,17 @@ int register_user(const char* username, const char* status, const char* ip, stru
 
 //enviar json
 void send_json(struct lws *wsi, cJSON *json) {
+    //string del json cJSON_PrintUnformatted toma el jsson y lo converite a string
     char *json_str = cJSON_PrintUnformatted(json);
+    //buffer de datos
     unsigned char buf[LWS_PRE + 1024];
     unsigned char *p = &buf[LWS_PRE];
+    //copiar datos al websocket
     size_t len = strlen(json_str);
     memcpy(p, json_str, len);
+    //enviar los datos al ws
     lws_write(wsi, p, len, LWS_WRITE_TEXT);
+    //liberar la memoria
     free(json_str);
 }
 
