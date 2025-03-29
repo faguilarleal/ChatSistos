@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
-#include <pthread.h> //mi real esta libreria
+#include <pthread.h> 
 #include <cjson/cJSON.h> //para parcear a cjson
 
 #define MAX_USERNAME 50
