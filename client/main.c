@@ -22,18 +22,39 @@ struct thread_args {
     struct lws_context *context;
 };
 
-void enviar_json(cJSON *json, struct lws *wsi) {
+int enviar_json(cJSON *json, struct lws *wsi) {
+    // Convertir JSON a una cadena
     char *msg_str = cJSON_PrintUnformatted(json);
+    if (msg_str == NULL) {
+        printf("Error al convertir JSON a cadena.\n");
+        return -1;
+    }
+
     size_t len = strlen(msg_str);
+
+    // Reservar memoria para el buffer (incluyendo espacio para LWS_PRE)
     unsigned char *buffer = malloc(LWS_PRE + len);
+    if (buffer == NULL) {
+        printf("Error al reservar memoria para el buffer.\n");
+        free(msg_str);
+        return -1;
+    }
+
+    // Copiar la cadena JSON al buffer (empezando después de LWS_PRE)
     memcpy(buffer + LWS_PRE, msg_str, len);
 
+    // Llamar a lws_callback_on_writable y enviar el mensaje
     lws_callback_on_writable(wsi);
     lws_write(wsi, buffer + LWS_PRE, len, LWS_WRITE_TEXT);
 
-    free(buffer);
-    free(msg_str);
+    // Liberar la memoria después de enviar
+    free(buffer);  // Liberar el buffer
+    free(msg_str); // Liberar la cadena JSON
+
+    // Eliminar el objeto JSON
     cJSON_Delete(json);
+
+    return 0;
 }
 
 // Función para obtener el timestamp actual en formato de texto
@@ -76,8 +97,8 @@ int change_status(struct lws *wsi) {
 
     // Añadir los campos al objeto JSON
     cJSON_AddStringToObject(json, "type", "change_status");
-    cJSON_AddStringToObject(json, "username", current_username);
-    cJSON_AddStringToObject(json, "status", estado);
+    cJSON_AddStringToObject(json, "sender", current_username);
+    cJSON_AddStringToObject(json, "content", estado);
 
     // Enviar el JSON
     enviar_json(json, wsi);
@@ -86,8 +107,6 @@ int change_status(struct lws *wsi) {
     strcpy(current_status, estado);
     printf("Status cambiado a: %s\n", current_status);
 
-    // Liberar memoria
-    cJSON_Delete(json);
 
     return 0;
 }
@@ -263,36 +282,51 @@ int send_private_message(struct lws *wsi) {
     return 0;
 }
 
-// Solicitar lista de usuarios
+pthread_mutex_t list_users_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 int list_users(struct lws *wsi) {
+    // Bloquear el mutex para evitar condiciones de carrera
+    pthread_mutex_lock(&list_users_mutex);
+
     // Crear objeto JSON
     cJSON *json = cJSON_CreateObject();
     if (json == NULL) {
         printf("Error al crear el objeto JSON.\n");
+        pthread_mutex_unlock(&list_users_mutex);  // Desbloquear antes de salir
+        return -1;
+    }
+
+    // Verificar que current_username esté inicializado
+    if (current_username == NULL) {
+        printf("current_username no está inicializado.\n");
+        cJSON_Delete(json);
+        pthread_mutex_unlock(&list_users_mutex);  // Desbloquear antes de salir
         return -1;
     }
 
     // Añadir los campos al objeto JSON
     cJSON_AddStringToObject(json, "type", "list_users");
-    cJSON_AddStringToObject(json, "sender", current_username);  // Usando el nombre de usuario actual
+    cJSON_AddStringToObject(json, "sender", "Francis");  // Usando el nombre de usuario actual
 
-    // Convertir el objeto JSON a una cadena
-    char *json_string = cJSON_PrintUnformatted(json);
-    if (json_string == NULL) {
-        printf("Error al convertir JSON a cadena.\n");
-        cJSON_Delete(json);
-        return -1;
+
+
+    // Depuración: Verificar el contenido de la cadena JSON antes de enviarla
+    printf("JSON generado: %s\n", json);
+
+    // Enviar el mensaje (suponiendo que tengas una función para eso)
+    int r = enviar_json(json, wsi);
+    if (r < 0) {
+        printf("Error al enviar el mensaje.\n");
     }
 
-    // Enviar el JSON
-    enviar_json(json, wsi);
 
-    // Liberar memoria
-    free(json_string);
-    cJSON_Delete(json);
+    // Desbloquear el mutex después de completar la operación
+    pthread_mutex_unlock(&list_users_mutex);
 
     return 0;
 }
+
+
 
 
 // Mostrar información de un usuario específico
@@ -313,24 +347,13 @@ int user_info(struct lws *wsi) {
     cJSON_AddStringToObject(json, "sender", current_username);  // Usando el nombre de usuario actual
     cJSON_AddStringToObject(json, "target", target_username);    // Nombre del usuario objetivo
 
-    // Convertir el objeto JSON a una cadena
-    char *json_string = cJSON_PrintUnformatted(json);
-    if (json_string == NULL) {
-        printf("Error al convertir JSON a cadena.\n");
-        cJSON_Delete(json);
-        return -1;
-    }
-
     // Enviar el JSON
     enviar_json(json, wsi);
 
     // Liberar memoria
-    free(json_string);
-    cJSON_Delete(json);
 
     return 0;
 }
-
 
 
 //ayuda
@@ -454,25 +477,51 @@ static int callback_client(struct lws *wsi, enum lws_callback_reasons reason,
                             printf("[Privado de: %s] [%s] %s: %s\n", sender->valuestring,timestamp->valuestring,  target->valuestring,content->valuestring);
                         }
                     }
-                }
-                // Si es una respuesta de información del usuario
-                else if (strcmp(type->valuestring, "user_info_response") == 0) {
-                    const cJSON *sender = cJSON_GetObjectItem(json, "sender");
-                    const cJSON *target = cJSON_GetObjectItem(json, "target");
-                    const cJSON *content = cJSON_GetObjectItem(json, "content");
-                    const cJSON *timestamp = cJSON_GetObjectItem(json, "timestamp");
+                    else if (strcmp(type->valuestring, "user_info_response") == 0) {
+                        const cJSON *timestamp = cJSON_GetObjectItem(json, "timestamp");
+                        const cJSON *content = cJSON_GetObjectItem(json, "content");
+                        const cJSON *target = cJSON_GetObjectItem(json, "target");
 
-                    if (sender && target && content && timestamp) {
-                        const cJSON *ip = cJSON_GetObjectItem(content, "ip");
-                        const cJSON *status = cJSON_GetObjectItem(content, "status");
+                        // Verificar si el campo 'timestamp' existe y es una cadena
+                        if (timestamp && cJSON_IsString(timestamp)) {
+                            printf("Información del usuario recibida [%s]:\n", timestamp->valuestring);
+                        } else {
+                            printf("Información del usuario recibida:\n");
+                        }
 
-                        if (ip && status) {
-                            printf("[INFO] [%s] Usuario: %s (Solicitado por: %s)\n", timestamp->valuestring, target->valuestring, sender->valuestring);
-                            printf("      📡 IP: %s\n", ip->valuestring);
-                            printf("      🔹 Estado: %s\n", status->valuestring);
+                        // Verificar si 'target' está presente y es una cadena
+                        if (target && cJSON_IsString(target)) {
+                            printf("Usuario objetivo: %s\n", target->valuestring);
+                        } else {
+                            printf("Error: 'target' no está presente o no es una cadena válida.\n");
+                        }
+
+                        // Verificar si 'content' es un objeto JSON válido
+                        if (content && cJSON_IsObject(content)) {
+                            const cJSON *ip = cJSON_GetObjectItem(content, "ip");
+                            const cJSON *status = cJSON_GetObjectItem(content, "status");
+
+                            // Verificar si 'ip' y 'status' están presentes y son cadenas
+                            if (ip && cJSON_IsString(ip)) {
+                                printf("IP: %s\n", ip->valuestring);
+                            } else {
+                                printf("Error: 'ip' no está presente o no es una cadena válida.\n");
+                            }
+
+                            if (status && cJSON_IsString(status)) {
+                                printf("Estado: %s\n", status->valuestring);
+                            } else {
+                                printf("Error: 'status' no está presente o no es una cadena válida.\n");
+                            }
+                        } else {
+                            printf("Error: 'content' no es un objeto JSON válido.\n");
                         }
                     }
+
                 }
+                // Si es una respuesta de información del usuario
+
+
 
                 // Liberamos el objeto JSON después de usarlo
                 cJSON_Delete(json);
